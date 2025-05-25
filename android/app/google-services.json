@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "817547221463",
+    "project_id": "mechaminds-dd27f",
+    "storage_bucket": "mechaminds-dd27f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:817547221463:android:5642933ef05d2cb446d392",
+        "android_client_info": {
+          "package_name": "com.example.robotic_walking_stick"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyABLLuRx25TxQxnsgKi6sLqrmUDanJOQJM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
