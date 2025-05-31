@@ -1325,9 +1325,105 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 }
+
+// Mapscreen
+// ==== PRELOADED LOCATIONS LIST ====
+final List<Map<String, dynamic>> preloadedLocations = [
+  {'name': 'Home',     'lat': 9.5313, 'lon': 6.4521},
+  {'name': 'School',   'lat': 9.5400, 'lon': 6.4650},
+  {'name': 'Market',   'lat': 9.5380, 'lon': 6.4630},
+];
+
+// ==== LOCATION PICKER MODAL ====
+Future<void> showLocationPicker({
+  required BuildContext context,
+  required Function(LatLng, String) onPicked,
+  required String title,
+}) async {
+  TextEditingController controller = TextEditingController();
+  List<Map<String, dynamic>> searchResults = [];
+  bool isLoading = false;
+
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setState) {
+          Future<void> doSearch(String query) async {
+            setState(() => isLoading = true);
+            final url = Uri.parse('https://nominatim.openstreetmap.org/search?q=$query&format=json&limit=5');
+            final resp = await http.get(url, headers: {
+              'User-Agent': 'MechaMindsApp/1.0 (pressnoll@gmail.com)'
+            });
+            if (resp.statusCode == 200) {
+              searchResults = List<Map<String, dynamic>>.from(json.decode(resp.body));
+            } else {
+              searchResults = [];
+            }
+            setState(() => isLoading = false);
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 16,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  SizedBox(height: 12),
+                  ...preloadedLocations.map((loc) => ListTile(
+                    leading: Icon(Icons.place, color: Colors.blue),
+                    title: Text(loc['name']),
+                    onTap: () {
+                      onPicked(LatLng(loc['lat'], loc['lon']), loc['name']);
+                      Navigator.pop(context);
+                    },
+                  )),
+                  Divider(),
+                  TextField(
+                    controller: controller,
+                    decoration: InputDecoration(
+                      labelText: "Search for a place",
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                    onChanged: (val) {
+                      if (val.length > 2) doSearch(val);
+                    },
+                  ),
+                  if (isLoading) Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: CircularProgressIndicator(),
+                  ),
+                  ...searchResults.map((item) => ListTile(
+                    leading: Icon(Icons.location_on, color: Colors.green),
+                    title: Text(item['display_name']),
+                    onTap: () {
+                      final lat = double.tryParse(item['lat'].toString());
+                      final lon = double.tryParse(item['lon'].toString());
+                      if (lat != null && lon != null) {
+                        onPicked(LatLng(lat, lon), item['display_name']);
+                        Navigator.pop(context);
+                      }
+                    },
+                  )),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
-
   @override
   _MapScreenState createState() => _MapScreenState();
 }
@@ -1344,21 +1440,33 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   bool isLoadingStickLocation = true;
   bool _userInteracted = false;
   List<LatLng> routePoints = [];
-  String routingProfile = 'foot-walking';
+  String routingProfile = 'foot-walking'; // used for both stick and custom
   int stickFetchRetryCount = 0;
   int routeFetchRetryCount = 0;
   static const int maxRetries = 3;
 
   static const String firebaseUrl = 'https://walking-stick-app-default-rtdb.firebaseio.com/gps_data.json';
-  static const String orsApiKey = '5b3ce3597851110001cf6248b008bcf2abcb48f0901453e0351fc38e'; // Verify this key
+  static const String orsApiKey = '5b3ce3597851110001cf6248b008bcf2abcb48f0901453e0351fc38e'; // <-- Put your ORS API key here
 
   // Color palette
-  static const Color primaryColor = Color(0xFF7B1FA2); // Purple
-  static const Color accentColor = Color(0xFF20B333); // Green
-  static const Color buttonGradientStart = Color(0xFF0288D1); // Deep blue
-  static const Color buttonGradientEnd = Color(0xFF4FC3F7); // Cyan
-  static const Color buttonOverlayColor = Color(0xFF01579B); // Dark blue for press effect
-  static const Color iconColor = Color.fromARGB(255, 157, 134, 80); // Light yellow for icons
+  static const Color primaryColor = Color(0xFF7B1FA2);
+  static const Color accentColor = Color(0xFF20B333);
+  static const Color buttonGradientStart = Color(0xFF0288D1);
+  static const Color buttonGradientEnd = Color(0xFF4FC3F7);
+  static const Color buttonOverlayColor = Color(0xFF01579B);
+  static const Color iconColor = Color.fromARGB(255, 157, 134, 80);
+
+  // ==== CUSTOM ROUTING STATE ====
+  LatLng? customStart;
+  LatLng? customEnd;
+  String? customStartName;
+  String? customEndName;
+  List<LatLng> customRoutePoints = [];
+  bool useCustomRouting = false; // toggle: true=custom, false=stick
+  String? customRouteDuration;
+  String? customRouteDistance;
+  String? stickRouteDuration;
+  String? stickRouteDistance;
 
   @override
   void initState() {
@@ -1383,19 +1491,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _initializeLocation() async {
-    if (kIsWeb) {
-      setState(() {
-        currentLocation = const LatLng(9.5313, 6.4521);
-        mapController.move(currentLocation!, Provider.of<SettingsState>(context, listen: false).defaultZoom);
-      });
-      return;
-    }
-
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Location services are disabled. Please enable them.")),
-      );
       setState(() {
         currentLocation = const LatLng(9.5313, 6.4521);
         mapController.move(currentLocation!, Provider.of<SettingsState>(context, listen: false).defaultZoom);
@@ -1407,9 +1504,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Location permissions denied.")),
-        );
         setState(() {
           currentLocation = const LatLng(9.5313, 6.4521);
           mapController.move(currentLocation!, Provider.of<SettingsState>(context, listen: false).defaultZoom);
@@ -1419,9 +1513,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     }
 
     if (permission == LocationPermission.deniedForever) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Location permissions permanently denied.")),
-      );
       setState(() {
         currentLocation = const LatLng(9.5313, 6.4521);
         mapController.move(currentLocation!, Provider.of<SettingsState>(context, listen: false).defaultZoom);
@@ -1438,7 +1529,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       setState(() {
         currentLocation = LatLng(position.latitude, position.longitude);
         _updateMapPosition();
-        _fetchRoute();
+        if (!useCustomRouting) _fetchRoute();
       });
     });
 
@@ -1451,7 +1542,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         mapController.move(currentLocation!, Provider.of<SettingsState>(context, listen: false).defaultZoom);
       });
     } catch (e) {
-      print("Error getting initial location: $e");
       setState(() {
         currentLocation = const LatLng(9.5313, 6.4521);
         mapController.move(currentLocation!, Provider.of<SettingsState>(context, listen: false).defaultZoom);
@@ -1468,13 +1558,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   Future<void> fetchStickLocation() async {
     if (stickFetchRetryCount >= maxRetries) {
-      print("❌ Max retries reached for stick location fetch");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Failed to fetch stick location after multiple retries")),
-      );
       return;
     }
-
     try {
       final response = await http.get(Uri.parse(firebaseUrl)).timeout(
         const Duration(seconds: 15),
@@ -1482,57 +1567,27 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           throw TimeoutException("Request to Firebase timed out after 15 seconds");
         },
       );
-      print('🌐 Stick Location Response: Status=${response.statusCode}, Body=${response.body}');
-
       if (response.statusCode == 200) {
         if (response.body.isEmpty || response.body == 'null') {
-          print("⚠️ No stick location data found: Empty or null response");
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("No stick location data available")),
-          );
           return;
         }
-
         final data = jsonDecode(response.body);
-        if (data == null || data is! Map<String, dynamic> || data.isEmpty) {
-          print("⚠️ Invalid stick location data: Not a valid map or empty");
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Invalid stick location data structure")),
-          );
-          return;
-        }
-
         final lat = data['latitude'] as double?;
         final lon = data['longitude'] as double?;
         if (lat == null || lon == null || !lat.isFinite || !lon.isFinite) {
-          print("❌ Failed to parse lat/lon or invalid values: lat=$lat, lon=$lon");
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Invalid latitude or longitude values")),
-          );
           return;
         }
-
-        print("✅ Parsed lat: $lat, lon: $lon");
         setState(() {
           stickLocation = LatLng(lat, lon);
           isLoadingStickLocation = false;
           lastUpdated = TimeOfDay.now().format(context);
-          stickFetchRetryCount = 0; // Reset retry count on success
+          stickFetchRetryCount = 0;
           _updateMapPosition();
-          _fetchRoute();
+          if (!useCustomRouting) _fetchRoute();
         });
-      } else {
-        print("❌ Failed to fetch location: ${response.statusCode}, ${response.reasonPhrase}");
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Failed to fetch stick location: ${response.statusCode} ${response.reasonPhrase}")),
-        );
       }
     } catch (e) {
       stickFetchRetryCount++;
-      print("❌ Exception fetching stick location (Retry $stickFetchRetryCount/$maxRetries): $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error fetching stick location (Retry $stickFetchRetryCount): $e")),
-      );
       if (stickFetchRetryCount < maxRetries) {
         Future.delayed(const Duration(seconds: 5), () {
           if (mounted) fetchStickLocation();
@@ -1542,25 +1597,32 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _fetchRoute() async {
-    if (currentLocation == null || stickLocation == null) {
-      print("⚠️ Cannot fetch route: Missing location data");
+    if (currentLocation == null || stickLocation == null || useCustomRouting) {
       setState(() {
         routePoints = [];
+        stickRouteDistance = null;
+        stickRouteDuration = null;
       });
       return;
     }
 
-    if (routeFetchRetryCount >= maxRetries) {
-      print("❌ Max retries reached for route fetch");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Failed to fetch route after multiple retries")),
-      );
+    // --------- PATCH: Short Distance Logic ---------
+    double dist = Distance().as(LengthUnit.Meter, currentLocation!, stickLocation!);
+    if (dist < 30) {
+      setState(() {
+        routePoints = [currentLocation!, stickLocation!];
+        stickRouteDistance = _formatDistance(dist);
+        stickRouteDuration = "<1 min";
+      });
       return;
     }
+    // --------- END PATCH ---------
 
+    if (routeFetchRetryCount >= maxRetries) {
+      return;
+    }
     try {
       final url = 'https://api.openrouteservice.org/v2/directions/$routingProfile/geojson';
-      print("🌐 Fetching route: URL=$url, Profile=$routingProfile");
       final response = await http
           .post(
             Uri.parse(url),
@@ -1575,58 +1637,42 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ],
             }),
           )
-          .timeout(const Duration(seconds: 30)); // Increased to 30 seconds
-
-      print('🌐 Route Response: Status=${response.statusCode}, Body=${response.body}');
-
+          .timeout(const Duration(seconds: 30));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['features']?.isEmpty ?? true) {
-          print("❌ No route features found in response");
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("No route found")),
-          );
           setState(() {
             routePoints = [];
+            stickRouteDistance = null;
+            stickRouteDuration = null;
           });
           return;
         }
         final coordinates = data['features'][0]['geometry']['coordinates'] as List?;
-        if (coordinates == null || coordinates.isEmpty) {
-          print("❌ Invalid route coordinates");
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Invalid route data")),
-          );
+        final summary = data['features'][0]['properties']['summary'];
+        if (coordinates == null) {
           setState(() {
             routePoints = [];
+            stickRouteDistance = null;
+            stickRouteDuration = null;
           });
           return;
         }
         setState(() {
           routePoints = coordinates.map((coord) => LatLng(coord[1], coord[0])).toList();
-          routeFetchRetryCount = 0; // Reset retry count on success
+          stickRouteDistance = _formatDistance(summary['distance']);
+          stickRouteDuration = _formatDuration(summary['duration']);
+          routeFetchRetryCount = 0;
         });
       } else {
-        String errorMsg = "Failed to fetch route: ${response.statusCode}";
-        if (response.statusCode == 401 || response.statusCode == 403) {
-          errorMsg = "Invalid or unauthorized ORS API key";
-        } else if (response.statusCode == 404) {
-          errorMsg = "Route not found for the given locations";
-        }
-        print("❌ $errorMsg");
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(errorMsg)),
-        );
         setState(() {
           routePoints = [];
+          stickRouteDistance = null;
+          stickRouteDuration = null;
         });
       }
     } catch (e) {
       routeFetchRetryCount++;
-      print("❌ Exception fetching route (Retry $routeFetchRetryCount/$maxRetries): $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error fetching route (Retry $routeFetchRetryCount): $e")),
-      );
       if (routeFetchRetryCount < maxRetries) {
         Future.delayed(const Duration(seconds: 5), () {
           if (mounted) _fetchRoute();
@@ -1634,18 +1680,96 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       } else {
         setState(() {
           routePoints = [];
+          stickRouteDistance = null;
+          stickRouteDuration = null;
         });
       }
     }
   }
 
-  void _updateMapPosition() {
-    if (_userInteracted) {
+  Future<void> _fetchCustomRoute() async {
+    if (customStart == null || customEnd == null) return;
+
+    // --------- PATCH: Short Distance Logic ---------
+    double dist = Distance().as(LengthUnit.Meter, customStart!, customEnd!);
+    if (dist < 30) {
+      setState(() {
+        customRoutePoints = [customStart!, customEnd!];
+        customRouteDistance = _formatDistance(dist);
+        customRouteDuration = "<1 min";
+      });
       return;
     }
+    // --------- END PATCH ---------
 
-    if (currentLocation != null && stickLocation != null) {
+    final url = 'https://api.openrouteservice.org/v2/directions/$routingProfile/geojson';
+    final response = await http.post(
+      Uri.parse(url),
+      headers: {
+        'Authorization': orsApiKey,
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'coordinates': [
+          [customStart!.longitude, customStart!.latitude],
+          [customEnd!.longitude, customEnd!.latitude],
+        ],
+      }),
+    );
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final coords = data['features'][0]['geometry']['coordinates'] as List?;
+      final summary = data['features'][0]['properties']['summary'];
+      if (coords == null) {
+        setState(() {
+          customRoutePoints = [];
+          customRouteDistance = null;
+          customRouteDuration = null;
+        });
+        return;
+      }
+      setState(() {
+        customRoutePoints = coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
+        customRouteDistance = _formatDistance(summary['distance']);
+        customRouteDuration = _formatDuration(summary['duration']);
+      });
+      mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: LatLngBounds(customStart!, customEnd!),
+          padding: const EdgeInsets.all(50),
+        ),
+      );
+    } else {
+      setState(() {
+        customRoutePoints = [];
+        customRouteDistance = null;
+        customRouteDuration = null;
+      });
+    }
+  }
+
+  String _formatDistance(dynamic meters) {
+    if (meters == null) return '';
+    double km = (meters as num) / 1000.0;
+    return km >= 1 ? "${km.toStringAsFixed(1)} km" : "${meters.toStringAsFixed(0)} m";
+  }
+
+  String _formatDuration(dynamic seconds) {
+    if (seconds == null) return '';
+    final int mins = (seconds / 60).round();
+    if (mins < 60) return "$mins min";
+    final hours = (mins / 60).floor();
+    final remMins = mins % 60;
+    return "$hours h ${remMins} min";
+  }
+
+  void _updateMapPosition() {
+    if (_userInteracted) return;
+    if (!useCustomRouting && currentLocation != null && stickLocation != null) {
       final bounds = LatLngBounds(currentLocation!, stickLocation!);
+      mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(50)));
+    } else if (useCustomRouting && customStart != null && customEnd != null) {
+      final bounds = LatLngBounds(customStart!, customEnd!);
       mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(50)));
     } else if (currentLocation != null) {
       mapController.move(currentLocation!, mapController.camera.zoom);
@@ -1655,15 +1779,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _toggleRoutingProfile() {
     setState(() {
       routingProfile = routingProfile == 'foot-walking' ? 'driving-car' : 'foot-walking';
-      _fetchRoute();
-      SoundAndVibration.playSoundAndVibrate(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Routing profile changed to ${routingProfile == 'foot-walking' ? 'Walking' : 'Driving'}"),
-          duration: const Duration(seconds: 2),
-          backgroundColor: primaryColor,
-        ),
-      );
+      if (useCustomRouting) {
+        if (customStart != null && customEnd != null) _fetchCustomRoute();
+      } else {
+        _fetchRoute();
+      }
     });
   }
 
@@ -1680,7 +1800,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     setState(() {
       _userInteracted = true;
       mapController.move(mapController.camera.center, mapController.camera.zoom + 1);
-      SoundAndVibration.playSoundAndVibrate(context);
     });
   }
 
@@ -1688,14 +1807,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     setState(() {
       _userInteracted = true;
       mapController.move(mapController.camera.center, mapController.camera.zoom - 1);
-      SoundAndVibration.playSoundAndVibrate(context);
     });
   }
 
   void _toggleMapStyle() {
     final settingsState = Provider.of<SettingsState>(context, listen: false);
     settingsState.setIsSatelliteDefault(!settingsState.isSatelliteDefault);
-    SoundAndVibration.playSoundAndVibrate(context);
   }
 
   Widget _buildCustomButton({
@@ -1710,13 +1827,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       child: Tooltip(
         message: tooltip,
         child: ElevatedButton(
-          onPressed: () {
-            Haptics.vibrate(HapticsType.light);
-            onPressed();
-          },
+          onPressed: onPressed,
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.transparent,
-            foregroundColor: const Color.fromARGB(255, 86, 83, 73), // Changed to light yellow
+            foregroundColor: const Color.fromARGB(255, 86, 83, 73),
             padding: const EdgeInsets.all(12),
             minimumSize: const Size(50, 50),
             shape: RoundedRectangleBorder(
@@ -1747,6 +1861,84 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
             child: Center(
               child: Icon(icon, size: 22, color: iconColor),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRouteInfoBar({required String? distance, required String? duration}) {
+    if (distance == null || duration == null) return SizedBox.shrink();
+    return Positioned(
+      top: 16,
+      left: 20,
+      right: 20,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.55),
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [BoxShadow(blurRadius: 8, color: Colors.black26)],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.timer, color: Colors.white, size: 20),
+              SizedBox(width: 7),
+              Text(
+                "$duration  •  $distance",
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w500, color: Colors.white, fontSize: 16, letterSpacing: 0.2),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRoutingToggleButton() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 13.0),
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            useCustomRouting = !useCustomRouting;
+            if (useCustomRouting) {
+              routePoints = [];
+              stickRouteDistance = null;
+              stickRouteDuration = null;
+              _userInteracted = false;
+              if (customStart != null && customEnd != null) _fetchCustomRoute();
+            } else {
+              customRoutePoints = [];
+              customRouteDistance = null;
+              customRouteDuration = null;
+              _userInteracted = false;
+              _fetchRoute();
+            }
+          });
+        },
+        child: AnimatedContainer(
+          duration: Duration(milliseconds: 220),
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: useCustomRouting ? Colors.red : Colors.green,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: (useCustomRouting ? Colors.red : Colors.green).withOpacity(0.22),
+                blurRadius: 16, spreadRadius: 1, offset: Offset(0, 3)
+              )
+            ],
+          ),
+          child: Center(
+            child: Icon(
+              useCustomRouting ? Icons.flag : Icons.accessibility_new,
+              color: Colors.white,
+              size: 28,
             ),
           ),
         ),
@@ -1786,7 +1978,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
                     subdomains: const ['a', 'b', 'c'],
                   ),
-                if (routePoints.isNotEmpty)
+                if (useCustomRouting && customRoutePoints.isNotEmpty)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: customRoutePoints,
+                        strokeWidth: 5.0,
+                        color: Colors.purple,
+                      ),
+                    ],
+                  ),
+                if (!useCustomRouting && routePoints.isNotEmpty)
                   PolylineLayer(
                     polylines: [
                       Polyline(
@@ -1798,7 +2000,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   ),
                 MarkerLayer(
                   markers: [
-                    if (currentLocation != null)
+                    if (!useCustomRouting && currentLocation != null)
                       Marker(
                         point: currentLocation!,
                         width: 50,
@@ -1807,7 +2009,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                           const Shadow(blurRadius: 4, color: Colors.black38, offset: Offset(2, 2)),
                         ]),
                       ),
-                    if (stickLocation != null)
+                    if (!useCustomRouting && stickLocation != null)
                       Marker(
                         point: stickLocation!,
                         width: 50,
@@ -1824,6 +2026,20 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                           ),
                         ),
                       ),
+                    if (useCustomRouting && customStart != null)
+                      Marker(
+                        point: customStart!,
+                        width: 40,
+                        height: 40,
+                        child: Icon(Icons.play_arrow, color: Colors.blue, size: 32),
+                      ),
+                    if (useCustomRouting && customEnd != null)
+                      Marker(
+                        point: customEnd!,
+                        width: 40,
+                        height: 40,
+                        child: Icon(Icons.flag, color: Colors.red, size: 32),
+                      ),
                   ],
                 ),
               ],
@@ -1836,12 +2052,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               valueColor: AlwaysStoppedAnimation<Color>(primaryColor),
             ),
           ),
+        if (useCustomRouting)
+          _buildRouteInfoBar(distance: customRouteDistance, duration: customRouteDuration),
+        if (!useCustomRouting)
+          _buildRouteInfoBar(distance: stickRouteDistance, duration: stickRouteDuration),
         Positioned(
           top: 20,
           right: 20,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              _buildRoutingToggleButton(),
+              const SizedBox(height: 12),
+              _buildCustomButton(
+                onPressed: _toggleRoutingProfile,
+                icon: routingProfile == 'foot-walking' ? Icons.directions_walk : Icons.directions_car,
+                tooltip: routingProfile == 'foot-walking' ? "Switch to Driving" : "Switch to Walking",
+              ),
+              const SizedBox(height: 12),
               Consumer<SettingsState>(
                 builder: (context, settingsState, child) {
                   return _buildCustomButton(
@@ -1850,12 +2078,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     tooltip: settingsState.isSatelliteDefault ? "Switch to Street" : "Switch to Satellite",
                   );
                 },
-              ),
-              const SizedBox(height: 12),
-              _buildCustomButton(
-                onPressed: _toggleRoutingProfile,
-                icon: routingProfile == 'foot-walking' ? Icons.directions_walk : Icons.directions_car,
-                tooltip: routingProfile == 'foot-walking' ? "Switch to Driving" : "Switch to Walking",
               ),
               const SizedBox(height: 12),
               _buildCustomButton(
@@ -1868,6 +2090,62 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 onPressed: _zoomOut,
                 icon: Icons.remove,
                 tooltip: "Zoom Out",
+              ),
+              const SizedBox(height: 20),
+              AbsorbPointer(
+                absorbing: !useCustomRouting,
+                child: Opacity(
+                  opacity: useCustomRouting ? 1.0 : 0.5,
+                  child: Column(
+                    children: [
+                      ElevatedButton.icon(
+                        icon: Icon(Icons.play_arrow),
+                        label: Text('Pick Start'),
+                        style: ElevatedButton.styleFrom(
+                          shape: StadiumBorder(),
+                          backgroundColor: Colors.blue[100],
+                          foregroundColor: Colors.blue[900],
+                        ),
+                        onPressed: () async {
+                          await showLocationPicker(
+                            context: context,
+                            title: "Pick Start Location",
+                            onPicked: (latLng, name) {
+                              setState(() {
+                                customStart = latLng;
+                                customStartName = name;
+                              });
+                              if (customStart != null && customEnd != null) _fetchCustomRoute();
+                            },
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton.icon(
+                        icon: Icon(Icons.flag),
+                        label: Text('Pick End'),
+                        style: ElevatedButton.styleFrom(
+                          shape: StadiumBorder(),
+                          backgroundColor: Colors.red[100],
+                          foregroundColor: Colors.red[900],
+                        ),
+                        onPressed: () async {
+                          await showLocationPicker(
+                            context: context,
+                            title: "Pick End Location",
+                            onPicked: (latLng, name) {
+                              setState(() {
+                                customEnd = latLng;
+                                customEndName = name;
+                              });
+                              if (customStart != null && customEnd != null) _fetchCustomRoute();
+                            },
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
@@ -1944,6 +2222,20 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 ? "${stickLocation!.latitude.toStringAsFixed(4)}, ${stickLocation!.longitude.toStringAsFixed(4)}"
                                 : "Fetching...",
                             icon: Icons.location_pin,
+                          ),
+                          _buildDetailRow(
+                            label: "Custom Start:",
+                            value: customStartName ?? (customStart != null
+                                ? "${customStart!.latitude.toStringAsFixed(4)}, ${customStart!.longitude.toStringAsFixed(4)}"
+                                : "Not picked"),
+                            icon: Icons.play_arrow,
+                          ),
+                          _buildDetailRow(
+                            label: "Custom End:",
+                            value: customEndName ?? (customEnd != null
+                                ? "${customEnd!.latitude.toStringAsFixed(4)}, ${customEnd!.longitude.toStringAsFixed(4)}"
+                                : "Not picked"),
+                            icon: Icons.flag,
                           ),
                           _buildDetailRow(
                             label: "Altitude:",
@@ -2072,7 +2364,7 @@ class Alert {
 
 Future<List<Alert>> fetchAlerts() async {
   final response = await http.get(Uri.parse(
-      'https://walking-stick-app-default-rtdb.firebaseio.com/alerts.json')); // Replace with your Firebase URL
+      'https://walking-stick-app-default-rtdb.firebaseio.com/alerts.json')); // 
   if (response.statusCode == 200) {
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     return data.values.map((e) => Alert.fromJson(e)).toList().reversed.toList();
