@@ -129,7 +129,7 @@ class _MyAppState extends State<MyApp> {
       );
     }
     return MaterialApp(
-      title: "MECHAMINDS",
+      title: "COMPANIONSTICK",
       debugShowCheckedModeBanner: false,
       theme: ThemeData.light().copyWith(
         textTheme: GoogleFonts.poppinsTextTheme(),
@@ -373,7 +373,7 @@ class _WelcomePageState extends State<WelcomePage> with TickerProviderStateMixin
                         end: Alignment.bottomRight,
                       ).createShader(bounds),
                       child: Text(
-                        "MECHAMINDS",
+                        "COMPANIONSTICK",
                         style: GoogleFonts.poppins(
                           fontSize: 28,
                           fontWeight: FontWeight.bold,
